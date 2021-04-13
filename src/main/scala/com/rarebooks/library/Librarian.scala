@@ -1,15 +1,18 @@
 package com.rarebooks.library
 
-import akka.actor.{Actor, ActorLogging, Props, Stash}
-import com.rarebooks.library.Librarian.optToEither
+import akka.actor.{Actor, ActorLogging, ActorRef, Props, Stash}
+import com.rarebooks.library.Librarian.{ComplainException, optToEither}
 
 import scala.concurrent.duration.FiniteDuration
 
 object Librarian {
   import RareBooksProtocol._
 
-  def props(findBookDuration: FiniteDuration): Props =
-    Props(new Librarian(findBookDuration))
+  // Immutable exception descriptor
+  final case class ComplainException(c: Complain, customer: ActorRef) extends IllegalStateException("Too many complaints")
+
+  def props(findBookDuration: FiniteDuration, maxComplainCount: Int): Props =
+    Props(new Librarian(findBookDuration, maxComplainCount))
 
   def optToEither[T](v: T, f: T => Option[BookCard]): Either[BookNotFound, BookFound] =
     f(v) match {
@@ -18,15 +21,16 @@ object Librarian {
       case _ =>
         Left(BookNotFound(s"Book(s) not found base on $v"))
     }
-
-
 }
 
-class Librarian(findBooKDuration: FiniteDuration) extends Actor
+class Librarian(findBooKDuration: FiniteDuration, maxComplainCount: Int) extends Actor
   with ActorLogging
   with Stash {
 
   import RareBooksProtocol._
+
+  // Local mutable state for number of complaints received
+  private var complainCount: Int = 0
 
   override def receive: Receive = {
     // TODO: FindBookByIsbn(isbn, _)
@@ -45,5 +49,15 @@ class Librarian(findBooKDuration: FiniteDuration) extends Actor
         f => sender() ! f, // Book not found
         s => sender() ! s  //  Book found
       )
+  }
+
+  private def ready: Receive = {
+    case m: Msg => m match {
+      case c: Complain if complainCount == maxComplainCount =>
+        throw ComplainException(c, sender())
+      case c: Complain =>
+        complainCount += 1
+        sender ! Credit()
+    }
   }
 }

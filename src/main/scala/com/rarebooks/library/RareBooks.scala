@@ -1,6 +1,6 @@
 package com.rarebooks.library
 
-import akka.actor.{Actor, ActorLogging, Props, Stash}
+import akka.actor.{Actor, ActorLogging, OneForOneStrategy, Props, Stash, SupervisorStrategy}
 import akka.routing.{ActorRefRoutee, RoundRobinRoutingLogic, Router}
 
 import scala.concurrent.duration.{Duration, FiniteDuration, MILLISECONDS => Millis}
@@ -22,6 +22,20 @@ class RareBooks extends Actor
   import RareBooks._
   import RareBooksProtocol._
 
+  // Overrides the default supervision strategy
+  override val supervisorStrategy: SupervisorStrategy = {
+
+    // Creates a Decider for the strategy
+    val decider: SupervisorStrategy.Decider = {
+      case Librarian.ComplainException(complain, customer) => // Decides what to do with a ComplainException
+        customer ! Credit()
+        SupervisorStrategy.Restart // Invokes the Restart directive
+    }
+
+    OneForOneStrategy() (decider orElse super.supervisorStrategy.decider ) // Returns the OneForOneStrategy with the decider or applies the default strategy
+
+  }
+
   // Defines how long various events take in the simulation
   private val openDuration: FiniteDuration =
     Duration(context.system.settings.config.getDuration("rare-books.open-duration", Millis), Millis)
@@ -32,15 +46,13 @@ class RareBooks extends Actor
   private val findBookDuration: FiniteDuration =
     Duration(context.system.settings.config.getDuration("rare-books.librarian.find-book-duration", Millis), Millis)
 
+  private val maxComplainCount: Int = context.system.settings.config getInt "rare-books.librarian.max-complain-count"
+
   // Gets the number of Librarian routees to create from the configuration
   private val nbrOfLibrarians: Int = context.system.settings.config getInt "rare-books.nbr-of-librarians"
 
   // Local mutable reference is a Router instead of an ActorRef
   private var router: Router = createLibrarian()
-
-
-
-
 
   // running totals
   var requestsToday: Int = 0
@@ -55,6 +67,7 @@ class RareBooks extends Actor
    * @return partial function open
    */
   override def receive: Receive = open
+
 
   /**
    * Behavior that simulates RareBooks is open.
@@ -98,7 +111,7 @@ class RareBooks extends Actor
   protected def createLibrarian(): Router = {
     var cnt: Int = 0
     val routees: Vector[ActorRefRoutee] = Vector.fill(nbrOfLibrarians) {
-      val r = context.actorOf(Librarian.props(findBookDuration), s"librarian-$cnt")
+      val r = context.actorOf(Librarian.props(findBookDuration, maxComplainCount), s"librarian-$cnt")
       cnt += 1
       ActorRefRoutee(r)
     }
