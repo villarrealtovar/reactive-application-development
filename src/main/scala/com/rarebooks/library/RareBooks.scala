@@ -1,6 +1,7 @@
 package com.rarebooks.library
 
-import akka.actor.{Actor, ActorLogging, ActorRef, Props, Stash}
+import akka.actor.{Actor, ActorLogging, Props, Stash}
+import akka.routing.{ActorRefRoutee, RoundRobinRoutingLogic, Router}
 
 import scala.concurrent.duration.{Duration, FiniteDuration, MILLISECONDS => Millis}
 
@@ -31,8 +32,15 @@ class RareBooks extends Actor
   private val findBookDuration: FiniteDuration =
     Duration(context.system.settings.config.getDuration("rare-books.librarian.find-book-duration", Millis), Millis)
 
+  // Gets the number of Librarian routees to create from the configuration
+  private val nbrOfLibrarians: Int = context.system.settings.config getInt "rare-books.nbr-of-librarians"
 
-  private val librarian = createLibrarian()
+  // Local mutable reference is a Router instead of an ActorRef
+  private var router: Router = createLibrarian()
+
+
+
+
 
   // running totals
   var requestsToday: Int = 0
@@ -55,9 +63,8 @@ class RareBooks extends Actor
    */
   private def open: Receive = {
     case message: Msg =>
+      router.route(message, sender()) //Routes the message instead of forwarding
       requestsToday += 1
-      // Forwards protocol messages to the Librarian
-      librarian forward message
     case Close =>
       context.system.scheduler.scheduleOnce(closeDuration, self, Open)
       context.become(closed)
@@ -84,12 +91,18 @@ class RareBooks extends Actor
   }
 
   /**
-   * Create librarian actor.
+   * Create librarian as router.
    *
-   * @return librarian ActorRef
+   * @return librarian router reference
    */
-  protected def createLibrarian(): ActorRef = {
-    context.actorOf(Librarian.props(findBookDuration), "librarian")
+  protected def createLibrarian(): Router = {
+    var cnt: Int = 0
+    val routees: Vector[ActorRefRoutee] = Vector.fill(nbrOfLibrarians) {
+      val r = context.actorOf(Librarian.props(findBookDuration), s"librarian-$cnt")
+      cnt += 1
+      ActorRefRoutee(r)
+    }
+    Router(RoundRobinRoutingLogic(), routees)
   }
 
 }
